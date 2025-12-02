@@ -34,15 +34,45 @@ import {
   Ban,
   Unlock,
   LogIn,
-  Key
+  Key,
+  Cloud,
+  Database
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { generateCampaignDetails } from './services/geminiService';
 import PhotoEditor from './components/PhotoEditor';
 import TextTemplateBuilder from './components/TextTemplateBuilder';
 import { Campaign, SubscriptionTier, UserRole, User, CampaignCategory, CampaignType, TextFieldConfig } from './types';
+import { auth, db, storage, isConfigured as isFirebaseReady } from './services/firebase';
+import { 
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut, 
+  onAuthStateChanged,
+  updateProfile
+} from 'firebase/auth';
+import { 
+  collection, 
+  addDoc, 
+  getDocs, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  onSnapshot,
+  query,
+  where,
+  orderBy,
+  deleteDoc,
+  updateDoc,
+  increment
+} from 'firebase/firestore';
+import { 
+  ref, 
+  uploadBytes, 
+  getDownloadURL 
+} from 'firebase/storage';
 
-// --- MOCK DATA ---
+// --- MOCK DATA (Fallback) ---
 const MOCK_USERS_INIT: User[] = [
   {
     id: 'u_admin',
@@ -63,26 +93,6 @@ const MOCK_USERS_INIT: User[] = [
     avatar: 'https://i.pravatar.cc/150?u=green',
     bio: 'Nous luttons pour un avenir durable et écologique.',
     isBanned: false
-  },
-  {
-    id: 'u_creator_pro',
-    name: 'Tech Events Inc.',
-    email: 'events@tech.com',
-    role: UserRole.CREATOR,
-    subscription: SubscriptionTier.PREMIUM,
-    avatar: 'https://i.pravatar.cc/150?u=tech',
-    bio: 'Organisateur des plus grandes conférences technologiques mondiales.',
-    isBanned: false
-  },
-  {
-    id: 'u_spammer',
-    name: 'Spammer Account',
-    email: 'spam@bad.com',
-    role: UserRole.CREATOR,
-    subscription: SubscriptionTier.FREE,
-    avatar: 'https://i.pravatar.cc/150?u=spam',
-    bio: 'I post bad links.',
-    isBanned: true
   }
 ];
 
@@ -91,59 +101,28 @@ const MOCK_CAMPAIGNS: Campaign[] = [
     id: 'c_123',
     creatorId: 'u_creator_free',
     type: CampaignType.PHOTO_FRAME,
-    title: 'Action Climat Maintenant',
-    description: 'Rejoignez le mouvement pour sauver notre planète.',
+    title: 'Exemple Local (Mode Démo)',
+    description: 'Ceci est une donnée fictive car Firebase n\'est pas configuré.',
     category: CampaignCategory.POLITICS,
-    frameUrl: 'https://placehold.co/1080x1080/22c55e/FFF/png?text=Cadre+Action+Climat',
-    hashtags: ['#ActionClimat', '#SauverLaTerre', '#AgirMaintenant'],
+    frameUrl: 'https://placehold.co/1080x1080/22c55e/FFF/png?text=Mode+Demo',
+    hashtags: ['#Demo', '#FrameFlow'],
     createdAt: '2023-10-15',
-    stats: { views: 1205, downloads: 450, shares: 120 },
+    stats: { views: 120, downloads: 45, shares: 12 },
     creatorTier: SubscriptionTier.FREE,
     isPrivate: false
-  },
-  {
-    id: 'c_456',
-    creatorId: 'u_creator_pro',
-    type: CampaignType.PHOTO_FRAME,
-    title: 'Conférence Tech 2024',
-    description: 'Badge officiel des participants au Sommet Mondial.',
-    category: CampaignCategory.EVENT,
-    frameUrl: 'https://placehold.co/1080x1080/2563eb/FFF/png?text=Tech+Conf+VIP', 
-    hashtags: ['#TechSummit2024', '#Innovation', '#FuturTech'],
-    createdAt: '2023-10-20',
-    stats: { views: 5000, downloads: 3200, shares: 800 },
-    creatorTier: SubscriptionTier.PREMIUM,
-    isPrivate: false
-  },
-  {
-    id: 'c_doc_1',
-    creatorId: 'u_creator_pro',
-    type: CampaignType.DOCUMENT,
-    title: 'Certificat de Participation',
-    description: 'Générez votre certificat officiel de formation.',
-    category: CampaignCategory.EDUCATION,
-    frameUrl: 'https://placehold.co/1200x800/f8fafc/1e293b/png?text=CERTIFICAT+DE+REUSSITE',
-    hashtags: ['#Certificat', '#Formation', '#Success'],
-    createdAt: '2023-11-10',
-    stats: { views: 300, downloads: 250, shares: 50 },
-    creatorTier: SubscriptionTier.PREMIUM,
-    isPrivate: true,
-    textFieldsConfig: [
-       { id: 'f1', label: 'Nom Complet', defaultValue: 'Prénom Nom', x: 50, y: 50, fontFamily: 'Playfair Display', fontSize: 60, color: '#1e293b', align: 'center' },
-       { id: 'f2', label: 'Date', defaultValue: '25 Nov 2024', x: 50, y: 70, fontFamily: 'Inter', fontSize: 24, color: '#64748b', align: 'center' }
-    ]
   }
 ];
 
 // --- AUTH CONTEXT ---
 interface AuthContextType {
   user: User | null;
-  login: (userId: string) => boolean; // Returns success/fail
-  signup: (name: string, email: string) => void;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<boolean>;
+  signup: (name: string, email: string, password: string) => Promise<boolean>;
   logout: () => void;
   deleteUser: (id: string) => void;
-  toggleBanUser: (id: string) => void; // New
-  deleteCampaign: (id: string) => void; // New
+  toggleBanUser: (id: string) => void;
+  deleteCampaign: (id: string) => void;
   mockUsers: User[];
   allUsers: User[];
 }
@@ -172,6 +151,21 @@ const Navbar = () => {
               <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold transform -rotate-3">F</div>
               <span className="font-bold text-xl text-slate-900 tracking-tight">FrameFlow</span>
             </Link>
+
+            {/* Connection Status Indicator */}
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1 bg-slate-50 rounded-full border border-slate-200">
+               {isFirebaseReady ? (
+                 <>
+                   <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                   <span className="text-[10px] font-bold text-slate-500">CLOUD CONNECTÉ</span>
+                 </>
+               ) : (
+                 <>
+                   <div className="w-2 h-2 rounded-full bg-orange-400"></div>
+                   <span className="text-[10px] font-bold text-slate-500">MODE LOCAL</span>
+                 </>
+               )}
+            </div>
 
             {/* Public Links */}
             <div className="hidden md:flex items-center space-x-6">
@@ -269,7 +263,8 @@ const Navbar = () => {
   );
 };
 
-// Component: Campaign Card
+// ... [Keep CampaignCard, ExplorePage, PublicCreatorProfile, LandingPage components same as before] ...
+// Component: CampaignCard
 const CampaignCard: React.FC<{ campaign: Campaign, creator?: User }> = ({ campaign, creator }) => {
   return (
     <Link to={`/campaign/${campaign.id}`} className="block group h-full">
@@ -330,7 +325,7 @@ const CampaignCard: React.FC<{ campaign: Campaign, creator?: User }> = ({ campai
   );
 };
 
-// 2. Explore Page (Filters Private Campaigns)
+// 2. Explore Page
 const ExplorePage = ({ campaigns, users }: { campaigns: Campaign[], users: User[] }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('Tous');
@@ -495,34 +490,42 @@ const LoginPage = () => {
   const [error, setError] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  // Auto-fill for demo purposes
-  const handleQuickLogin = (id: string) => {
-     const success = login(id);
-     if (success) {
-        navigate('/dashboard');
-     } else {
-        setError("Ce compte est banni ou n'existe pas.");
-     }
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
-    
-    // Simulate lookup
-    const foundUser = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
-    
-    if (foundUser) {
-      if (foundUser.isBanned) {
-        setError("Ce compte a été suspendu par l'administrateur.");
-      } else {
-        login(foundUser.id);
-        navigate('/dashboard');
+    setLoading(true);
+
+    if (isFirebaseReady) {
+      // FIREBASE LOGIN
+      try {
+        const success = await login(email, password);
+        if (success) navigate('/dashboard');
+        else setError("Email ou mot de passe incorrect.");
+      } catch (err) {
+        setError("Erreur de connexion. Vérifiez vos identifiants.");
       }
     } else {
-      setError("Adresse email inconnue. Utilisez un compte de démo ci-dessous.");
+      // MOCK LOGIN
+      const foundUser = allUsers.find(u => u.email.toLowerCase() === email.toLowerCase());
+      if (foundUser) {
+        if (foundUser.isBanned) {
+          setError("Ce compte a été suspendu par l'administrateur.");
+        } else {
+          // Fake password check
+          if (password === 'password' || password.length > 3) {
+             login(email, password); // This mock fn signature needs adaptation or simple use logic
+             navigate('/dashboard');
+          } else {
+             setError("Mot de passe incorrect (Mode démo : essayez 'password')");
+          }
+        }
+      } else {
+        setError("Compte introuvable en mode Démo.");
+      }
     }
+    setLoading(false);
   };
 
   return (
@@ -551,6 +554,7 @@ const LoginPage = () => {
                 <Link to="/" className="inline-block lg:hidden mb-8 text-blue-600 font-bold text-xl">FrameFlow</Link>
                 <h2 className="text-3xl font-bold text-slate-900">Bon retour !</h2>
                 <p className="mt-2 text-slate-600">Connectez-vous pour gérer vos campagnes.</p>
+                {!isFirebaseReady && <div className="mt-2 text-xs font-bold text-orange-500">MODE DÉMO LOCAL ACTIVÉ</div>}
              </div>
 
              {error && (
@@ -598,45 +602,49 @@ const LoginPage = () => {
                    </div>
                 </div>
 
-                <button type="submit" className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors">
-                   Se connecter
+                <button type="submit" disabled={loading} className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-70">
+                   {loading ? <Loader2 className="animate-spin" /> : 'Se connecter'}
                 </button>
              </form>
 
-             <div className="relative">
-                <div className="absolute inset-0 flex items-center">
-                   <div className="w-full border-t border-slate-300"></div>
-                </div>
-                <div className="relative flex justify-center text-sm">
-                   <span className="px-2 bg-slate-50 text-slate-500">Comptes de démonstration</span>
-                </div>
-             </div>
+             {!isFirebaseReady && (
+               <>
+                 <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                       <div className="w-full border-t border-slate-300"></div>
+                    </div>
+                    <div className="relative flex justify-center text-sm">
+                       <span className="px-2 bg-slate-50 text-slate-500">Comptes de démonstration</span>
+                    </div>
+                 </div>
 
-             <div className="grid grid-cols-1 gap-3">
-                {mockUsers.map(u => (
-                   <button 
-                     key={u.id} 
-                     onClick={() => handleQuickLogin(u.id)} 
-                     className={`flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all text-left group ${u.isBanned ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
-                     disabled={u.isBanned}
-                   >
-                      <div className="relative">
-                        <img src={u.avatar} className="w-10 h-10 rounded-full bg-slate-100" alt={u.name} />
-                        {u.role === UserRole.ADMIN && <span className="absolute -bottom-1 -right-1 bg-red-500 text-white text-[8px] px-1 rounded font-bold">ADM</span>}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                         <div className="font-bold text-sm text-slate-800 flex items-center gap-2">
-                           {u.name}
-                           {u.subscription === SubscriptionTier.PREMIUM && <Crown size={12} className="text-yellow-500 fill-yellow-500"/>}
-                         </div>
-                         <div className="text-xs text-slate-500 truncate">{u.email}</div>
-                      </div>
-                      <div className="text-slate-300 group-hover:text-blue-500">
-                         <ArrowRight size={16} />
-                      </div>
-                   </button>
-                ))}
-             </div>
+                 <div className="grid grid-cols-1 gap-3">
+                    {mockUsers.map(u => (
+                       <button 
+                         key={u.id} 
+                         onClick={() => { setEmail(u.email); setPassword('password'); }} 
+                         className={`flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-lg hover:border-blue-300 hover:shadow-sm transition-all text-left group ${u.isBanned ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
+                         disabled={u.isBanned}
+                       >
+                          <div className="relative">
+                            <img src={u.avatar} className="w-10 h-10 rounded-full bg-slate-100" alt={u.name} />
+                            {u.role === UserRole.ADMIN && <span className="absolute -bottom-1 -right-1 bg-red-500 text-white text-[8px] px-1 rounded font-bold">ADM</span>}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                             <div className="font-bold text-sm text-slate-800 flex items-center gap-2">
+                               {u.name}
+                               {u.subscription === SubscriptionTier.PREMIUM && <Crown size={12} className="text-yellow-500 fill-yellow-500"/>}
+                             </div>
+                             <div className="text-xs text-slate-500 truncate">{u.email}</div>
+                          </div>
+                          <div className="text-slate-300 group-hover:text-blue-500">
+                             <ArrowRight size={16} />
+                          </div>
+                       </button>
+                    ))}
+                 </div>
+               </>
+             )}
 
              <div className="text-center mt-6">
                 <p className="text-sm text-slate-600">
@@ -653,18 +661,59 @@ const LoginPage = () => {
 const SignupPage = () => {
    const { signup } = useContext(AuthContext);
    const navigate = useNavigate();
+   const [name, setName] = useState('');
+   const [email, setEmail] = useState('');
+   const [password, setPassword] = useState('');
+   const [loading, setLoading] = useState(false);
+   const [error, setError] = useState('');
+
+   const handleSignup = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setLoading(true);
+      setError('');
+      try {
+         const success = await signup(name, email, password);
+         if (success) navigate('/dashboard');
+         else setError("Erreur lors de l'inscription.");
+      } catch (e) {
+         setError("Erreur : " + (e as any).message);
+      } finally {
+         setLoading(false);
+      }
+   };
+
    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
          <div className="bg-white p-8 rounded-xl shadow-md max-w-md w-full">
-            <h2 className="text-2xl font-bold mb-6 text-center">Inscription</h2>
-            <button onClick={() => { signup("Nouveau Créateur", "new@test.com"); navigate('/dashboard'); }} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold">
-               Créer un compte Créateur
-            </button>
+            <h2 className="text-2xl font-bold mb-6 text-center">Créer un compte Créateur</h2>
+            {error && <div className="mb-4 text-red-500 text-sm bg-red-50 p-2 rounded">{error}</div>}
+            
+            <form onSubmit={handleSignup} className="space-y-4">
+              <div>
+                 <label className="block text-sm font-medium text-slate-700">Nom complet (ou Organisation)</label>
+                 <input type="text" required value={name} onChange={e => setName(e.target.value)} className="w-full border p-2 rounded mt-1"/>
+              </div>
+              <div>
+                 <label className="block text-sm font-medium text-slate-700">Email</label>
+                 <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full border p-2 rounded mt-1"/>
+              </div>
+              <div>
+                 <label className="block text-sm font-medium text-slate-700">Mot de passe</label>
+                 <input type="password" required value={password} onChange={e => setPassword(e.target.value)} className="w-full border p-2 rounded mt-1"/>
+              </div>
+              <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white py-3 rounded-lg font-bold disabled:opacity-50">
+                {loading ? <Loader2 className="animate-spin mx-auto"/> : 'S\'inscrire'}
+              </button>
+            </form>
+            <div className="mt-4 text-center">
+              <Link to="/login" className="text-sm text-blue-600">Déjà un compte ? Se connecter</Link>
+            </div>
          </div>
       </div>
    );
 };
 
+// ... [Keep AdminDashboard, CreatorDashboard as is - they just consume data] ...
 // ADMIN DASHBOARD - FIXED
 const AdminDashboard = ({ campaigns }: { campaigns: Campaign[] }) => {
    const { allUsers, deleteUser, toggleBanUser, deleteCampaign } = useContext(AuthContext);
@@ -909,12 +958,19 @@ const CreatorDashboard = ({ campaigns }: { campaigns: Campaign[] }) => {
               </div>
             </div>
           ))}
+          
+          {myCampaigns.length === 0 && (
+             <div className="col-span-full py-12 text-center border-2 border-dashed border-slate-200 rounded-xl bg-slate-50">
+                <p className="text-slate-500 mb-4">Vous n'avez pas encore de campagne.</p>
+                <Link to="/create" className="text-blue-600 font-bold hover:underline">Commencer maintenant</Link>
+             </div>
+          )}
       </div>
     </div>
   );
 };
 
-// 8. Create Campaign Form (Updated for Document Builder)
+// 8. Create Campaign Form (Updated for Firebase Storage)
 const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
   const navigate = useNavigate();
   const { user } = useContext(AuthContext);
@@ -932,10 +988,9 @@ const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
   const [frameFile, setFrameFile] = useState<File | null>(null);
   const [textConfig, setTextConfig] = useState<TextFieldConfig[]>([]);
 
-  // AI Loading State
+  // States
   const [isGenerating, setIsGenerating] = useState(false);
-
-  const isPremium = user?.subscription === SubscriptionTier.PREMIUM;
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleAiGeneration = async () => {
     if (!title) {
@@ -955,31 +1010,60 @@ const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    const newId = `c_${Date.now()}`;
-    const frameUrl = frameFile ? URL.createObjectURL(frameFile) : 'https://placehold.co/1080x1080/png';
+    setIsSubmitting(true);
     
-    // Parse hashtags from string to array
+    // Parse hashtags
     const hashtagsArray = hashtagsInput.split(' ').filter(tag => tag.startsWith('#'));
 
-    onAdd({
-      id: newId,
-      creatorId: user.id,
-      type: type,
-      title,
-      description,
-      category,
-      frameUrl,
-      hashtags: hashtagsArray,
-      createdAt: new Date().toISOString(),
-      stats: { views: 0, downloads: 0, shares: 0 },
-      creatorTier: user.subscription,
-      isPrivate,
-      textFieldsConfig: type === CampaignType.DOCUMENT ? textConfig : undefined
-    });
-    navigate('/dashboard');
+    try {
+      let frameUrl = 'https://placehold.co/1080x1080/png'; // Default
+
+      // 1. Upload Image to Firebase Storage if connected
+      if (frameFile && isFirebaseReady && storage) {
+        const storageRef = ref(storage, `campaigns/${Date.now()}_${frameFile.name}`);
+        const snapshot = await uploadBytes(storageRef, frameFile);
+        frameUrl = await getDownloadURL(snapshot.ref);
+      } else if (frameFile) {
+        // Fallback for Local Mode
+        frameUrl = URL.createObjectURL(frameFile);
+      }
+
+      const newCampaign: Campaign = {
+         id: `c_${Date.now()}`, // Temporary ID, will be replaced by Firestore ID
+         creatorId: user.id,
+         type: type,
+         title,
+         description,
+         category,
+         frameUrl,
+         hashtags: hashtagsArray,
+         createdAt: new Date().toISOString(),
+         stats: { views: 0, downloads: 0, shares: 0 },
+         creatorTier: user.subscription,
+         isPrivate,
+         textFieldsConfig: type === CampaignType.DOCUMENT ? textConfig : undefined
+      };
+
+      // 2. Save to Firestore
+      if (isFirebaseReady && db) {
+         // Remove ID to let Firestore generate it
+         const { id, ...data } = newCampaign;
+         await addDoc(collection(db, 'campaigns'), data);
+      } else {
+         // Local Mock
+         onAdd(newCampaign);
+      }
+
+      navigate('/dashboard');
+    } catch (error) {
+      console.error("Error creating campaign", error);
+      alert("Erreur lors de la création.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (step === 1) {
@@ -1140,8 +1224,9 @@ const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
             )}
           </div>
 
-          <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 shadow-md text-lg">
-             Lancer la Campagne
+          <button type="submit" disabled={isSubmitting} className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 shadow-md text-lg disabled:opacity-50 flex items-center justify-center gap-2">
+             {isSubmitting && <Loader2 className="animate-spin" />}
+             {isSubmitting ? 'Envoi en cours...' : 'Lancer la Campagne'}
           </button>
         </form>
       </div>
@@ -1149,19 +1234,32 @@ const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
   );
 };
 
-// 10. Participant View (Wrapper)
+// ... [ParticipantView remains mostly same, need to pass increment logic] ...
 const ParticipantView = ({ campaigns, users }: { campaigns: Campaign[], users: User[] }) => {
   const { id } = useParams<{ id: string }>();
-  const campaign = campaigns.find(c => c.id === id);
   const [downloaded, setDownloaded] = useState(false);
   
+  const campaign = campaigns.find(c => c.id === id);
+
+  // Stats increment
+  const handleDownloadComplete = async () => {
+    setDownloaded(true);
+    if (isFirebaseReady && db && id) {
+       // Increment download count in Firestore
+       try {
+         const campRef = doc(db, "campaigns", id);
+         await updateDoc(campRef, {
+            "stats.downloads": increment(1)
+         });
+       } catch (e) {
+          console.error("Failed to update stats", e);
+       }
+    }
+  };
+
   if (!campaign) return <div className="text-center py-20 font-bold text-slate-400">Campagne introuvable ou supprimée.</div>;
 
   const creator = users.find(u => u.id === campaign.creatorId);
-  // Privacy check: If private, ensure user has direct link (which they do if they are here). 
-  // Optionally, you could add password protection here.
-  
-  // Show related campaigns only if they are public
   const relatedCampaigns = campaigns.filter(c => 
      c.id !== campaign.id && 
      !c.isPrivate &&
@@ -1182,7 +1280,7 @@ const ParticipantView = ({ campaigns, users }: { campaigns: Campaign[], users: U
             {/* Left: Editor */}
             <div className="lg:col-span-2">
                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-1">
-                  <PhotoEditor campaign={campaign} onDownloadComplete={() => setDownloaded(true)} />
+                  <PhotoEditor campaign={campaign} onDownloadComplete={handleDownloadComplete} />
                </div>
                {downloaded && (
                  <div className="mt-6 bg-green-50 border border-green-200 rounded-xl p-6 text-center animate-fade-in-up">
@@ -1212,23 +1310,6 @@ const ParticipantView = ({ campaigns, users }: { campaigns: Campaign[], users: U
                      <span className="flex items-center gap-1"><Tag size={14}/> {campaign.category}</span>
                   </div>
                </div>
-
-               {relatedCampaigns.length > 0 && (
-                  <div>
-                     <h3 className="font-bold text-slate-900 mb-3">Autres campagnes publiques</h3>
-                     <div className="space-y-3">
-                        {relatedCampaigns.map(rc => (
-                           <Link key={rc.id} to={`/campaign/${rc.id}`} className="flex gap-3 items-center bg-white p-3 rounded-lg border border-slate-200 hover:border-blue-300 transition-colors">
-                              <img src={rc.frameUrl} className="w-12 h-12 rounded bg-slate-100 object-contain" alt=""/>
-                              <div className="overflow-hidden">
-                                 <div className="font-semibold text-sm truncate text-slate-800">{rc.title}</div>
-                                 <div className="text-xs text-slate-500">{rc.category}</div>
-                              </div>
-                           </Link>
-                        ))}
-                     </div>
-                  </div>
-               )}
             </div>
          </div>
        </div>
@@ -1236,11 +1317,12 @@ const ParticipantView = ({ campaigns, users }: { campaigns: Campaign[], users: U
   );
 };
 
-const Analytics = () => { return <div className="p-8">Analytics View</div> };
-
 const ProtectedRoute: React.FC<{ children: React.ReactNode, allowedRoles?: UserRole[] }> = ({ children, allowedRoles }) => {
-  const { user } = useContext(AuthContext);
+  const { user, loading } = useContext(AuthContext);
   const location = useLocation();
+
+  if (loading) return <div className="h-screen flex items-center justify-center"><Loader2 className="animate-spin"/></div>;
+  
   if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
   if (allowedRoles && !allowedRoles.includes(user.role)) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
@@ -1249,54 +1331,162 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode, allowedRoles?: UserR
 const App = () => {
   const [users, setUsers] = useState<User[]>(MOCK_USERS_INIT);
   const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const [campaigns, setCampaigns] = useState<Campaign[]>(MOCK_CAMPAIGNS);
 
-  const login = (userId: string) => {
-    const found = users.find(u => u.id === userId);
-    if (found) {
-       if (found.isBanned) return false;
-       setUser(found);
-       return true;
+  // 1. Listen for Auth Changes
+  useEffect(() => {
+    if (isFirebaseReady && auth) {
+      const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (firebaseUser) {
+           // Fetch full user profile from Firestore
+           const userRef = doc(db, "users", firebaseUser.uid);
+           const userSnap = await getDoc(userRef);
+           if (userSnap.exists()) {
+              setUser(userSnap.data() as User);
+           } else {
+              // Fallback if profile doesn't exist yet (should be created on signup)
+              setUser({
+                id: firebaseUser.uid,
+                name: firebaseUser.displayName || 'User',
+                email: firebaseUser.email || '',
+                role: UserRole.CREATOR,
+                subscription: SubscriptionTier.FREE,
+                avatar: firebaseUser.photoURL || `https://ui-avatars.com/api/?name=User`
+              });
+           }
+        } else {
+           setUser(null);
+        }
+        setLoading(false);
+      });
+      return () => unsubscribe();
+    } else {
+      setLoading(false);
     }
-    return false;
+  }, []);
+
+  // 2. Listen for Campaigns (Real-time)
+  useEffect(() => {
+    if (isFirebaseReady && db) {
+      const q = query(collection(db, "campaigns"));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const loadedCampaigns = snapshot.docs.map(doc => ({
+           id: doc.id,
+           ...doc.data()
+        } as Campaign));
+        setCampaigns(loadedCampaigns);
+      });
+      return () => unsubscribe();
+    }
+  }, []);
+
+  // 3. Listen for All Users (For Admin View)
+  useEffect(() => {
+    if (isFirebaseReady && db && user?.role === UserRole.ADMIN) {
+      const unsubscribe = onSnapshot(collection(db, "users"), (snapshot) => {
+         const loadedUsers = snapshot.docs.map(doc => doc.data() as User);
+         setUsers(loadedUsers);
+      });
+      return () => unsubscribe();
+    }
+  }, [user]);
+
+  // Actions
+  const login = async (email: string, pass: string): Promise<boolean> => {
+     if (isFirebaseReady && auth) {
+       try {
+         await signInWithEmailAndPassword(auth, email, pass);
+         return true;
+       } catch (e) {
+         console.error(e);
+         return false;
+       }
+     } else {
+       // Mock Login
+       const found = users.find(u => u.email === email);
+       if (found && !found.isBanned) {
+         setUser(found);
+         return true;
+       }
+       return false;
+     }
   };
 
-  const signup = (name: string, email: string) => {
-    const newUser: User = {
-      id: `u_${Date.now()}`,
-      name,
-      email,
-      role: UserRole.CREATOR,
-      subscription: SubscriptionTier.FREE,
-      avatar: `https://ui-avatars.com/api/?name=${name}`,
-      bio: '',
-      isBanned: false
-    };
-    setUsers([...users, newUser]);
-    setUser(newUser);
+  const signup = async (name: string, email: string, pass: string): Promise<boolean> => {
+     if (isFirebaseReady && auth) {
+        try {
+           const res = await createUserWithEmailAndPassword(auth, email, pass);
+           await updateProfile(res.user, { displayName: name });
+           
+           // Create User Document in Firestore
+           const newUser: User = {
+             id: res.user.uid,
+             name,
+             email,
+             role: UserRole.CREATOR,
+             subscription: SubscriptionTier.FREE,
+             avatar: `https://ui-avatars.com/api/?name=${name}`,
+             isBanned: false
+           };
+           await setDoc(doc(db, "users", res.user.uid), newUser);
+           return true;
+        } catch (e) {
+           console.error(e);
+           throw e;
+        }
+     } else {
+        // Mock Signup
+        const newUser: User = {
+          id: `u_${Date.now()}`,
+          name,
+          email,
+          role: UserRole.CREATOR,
+          subscription: SubscriptionTier.FREE,
+          avatar: `https://ui-avatars.com/api/?name=${name}`,
+          isBanned: false
+        };
+        setUsers([...users, newUser]);
+        setUser(newUser);
+        return true;
+     }
   };
 
-  const logout = () => setUser(null);
-
-  const deleteUser = (id: string) => {
-    setUsers(users.filter(u => u.id !== id));
-    if (user?.id === id) setUser(null);
+  const logout = () => {
+    if (isFirebaseReady && auth) signOut(auth);
+    else setUser(null);
   };
 
-  const toggleBanUser = (id: string) => {
-     setUsers(prev => prev.map(u => u.id === id ? { ...u, isBanned: !u.isBanned } : u));
+  const deleteUser = async (id: string) => {
+    if (isFirebaseReady && db) {
+       await deleteDoc(doc(db, "users", id));
+    } else {
+       setUsers(users.filter(u => u.id !== id));
+       if (user?.id === id) setUser(null);
+    }
   };
 
-  const deleteCampaign = (id: string) => {
-     setCampaigns(prev => prev.filter(c => c.id !== id));
+  const toggleBanUser = async (id: string) => {
+    if (isFirebaseReady && db) {
+       const u = users.find(x => x.id === id);
+       if (u) {
+          await updateDoc(doc(db, "users", id), { isBanned: !u.isBanned });
+       }
+    } else {
+       setUsers(prev => prev.map(u => u.id === id ? { ...u, isBanned: !u.isBanned } : u));
+    }
   };
 
-  const handleAddCampaign = (newCampaign: Campaign) => {
-    setCampaigns(prev => [...prev, newCampaign]);
+  const deleteCampaign = async (id: string) => {
+    if (isFirebaseReady && db) {
+       await deleteDoc(doc(db, "campaigns", id));
+    } else {
+       setCampaigns(prev => prev.filter(c => c.id !== id));
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout, deleteUser, toggleBanUser, deleteCampaign, mockUsers: users, allUsers: users }}>
+    <AuthContext.Provider value={{ user, loading, login, signup, logout, deleteUser, toggleBanUser, deleteCampaign, mockUsers: MOCK_USERS_INIT, allUsers: users }}>
       <HashRouter>
         <Routes>
           <Route path="/" element={<LandingPage />} />
@@ -1316,7 +1506,7 @@ const App = () => {
           
           <Route path="/create" element={
             <ProtectedRoute allowedRoles={[UserRole.CREATOR, UserRole.ADMIN]}>
-               <CreateCampaign onAdd={handleAddCampaign} />
+               <CreateCampaign onAdd={() => {}} />
             </ProtectedRoute>
           } />
           
