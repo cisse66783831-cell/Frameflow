@@ -1,0 +1,7 @@
+{
+  "name": "FrameFlow",
+  "description": "Une plateforme de campagne pour créer et partager des cadres photo de marque. Comprend un tableau de bord pour les créateurs et une interface intuitive pour les participants.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
