@@ -1,52 +1,51 @@
-import { initializeApp, getApps } from "firebase/app";
-import { getAuth } from "firebase/auth";
+import * as firebaseApp from "firebase/app";
+import { getAuth, GoogleAuthProvider } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
-import { getStorage } from "firebase/storage";
+// On n'importe plus le storage car on utilise le mode Base64 gratuit
+// import { getStorage } from "firebase/storage"; 
 
-// Helper to safely get environment variables
-const getEnv = (key: string) => {
-  // Try import.meta.env (Vite standard)
-  const meta = import.meta as any;
-  if (typeof meta !== 'undefined' && meta.env && meta.env[key]) {
-    return meta.env[key];
-  }
-  // Try process.env (Fallback for some environments/builds)
-  if (typeof process !== 'undefined' && process.env && process.env[key]) {
-    return process.env[key];
-  }
-  return '';
-};
+// Workaround for TypeScript errors where it fails to find exported members in firebase/app
+// This typically happens due to type definition mismatches in certain environments
+const { initializeApp, getApps } = firebaseApp as any;
 
-// Configuration Firebase using safe getter
+// Configuration Firebase EN DUR (Plus besoin de fichier .env)
 const firebaseConfig = {
-  apiKey: getEnv('VITE_FIREBASE_API_KEY'),
-  authDomain: getEnv('VITE_FIREBASE_AUTH_DOMAIN'),
-  projectId: getEnv('VITE_FIREBASE_PROJECT_ID'),
-  storageBucket: getEnv('VITE_FIREBASE_STORAGE_BUCKET'),
-  messagingSenderId: getEnv('VITE_FIREBASE_MESSAGING_SENDER_ID'),
-  appId: getEnv('VITE_FIREBASE_APP_ID')
+  apiKey: "AIzaSyAZS-CSUly5-qqqlkklYURGSnm5hKOg2J4",
+  authDomain: "frameflow-45b60.firebaseapp.com",
+  projectId: "frameflow-45b60",
+  storageBucket: "frameflow-45b60.firebasestorage.app",
+  messagingSenderId: "609414537478",
+  appId: "1:609414537478:web:2cefeb7828e0263762fe87",
+  measurementId: "G-ZRXEBVWNPY"
 };
 
-// Check if config is present
-const isConfigured = !!firebaseConfig.apiKey;
+// Check if config is present (toujours vrai maintenant)
+const isConfigured = true;
 
 let app;
 let auth: any = null;
 let db: any = null;
 let storage: any = null;
+let googleProvider: GoogleAuthProvider | null = null;
 
-if (isConfigured && getApps().length === 0) {
+if (getApps().length === 0) {
   try {
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
-    storage = getStorage(app);
-    console.log("🔥 Firebase connecté avec succès");
+    // Initialisation du fournisseur Google
+    googleProvider = new GoogleAuthProvider();
+    
+    // storage = getStorage(app); // Désactivé pour le mode gratuit
+    console.log("🔥 Firebase connecté avec succès (Mode Clés Intégrées)");
   } catch (error) {
     console.error("Erreur d'initialisation Firebase:", error);
   }
-} else if (!isConfigured) {
-  console.warn("⚠️ Firebase non configuré. L'application tourne en mode DEMO (Mock). Créez un fichier .env avec vos clés Firebase.");
+} else {
+  app = getApps()[0];
+  auth = getAuth(app);
+  db = getFirestore(app);
+  googleProvider = new GoogleAuthProvider();
 }
 
-export { auth, db, storage, isConfigured };
+export { auth, db, storage, googleProvider, isConfigured };

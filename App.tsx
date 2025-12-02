@@ -36,20 +36,23 @@ import {
   LogIn,
   Key,
   Cloud,
-  Database
+  Database,
+  Info
 } from 'lucide-react';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { generateCampaignDetails } from './services/geminiService';
 import PhotoEditor from './components/PhotoEditor';
 import TextTemplateBuilder from './components/TextTemplateBuilder';
 import { Campaign, SubscriptionTier, UserRole, User, CampaignCategory, CampaignType, TextFieldConfig } from './types';
-import { auth, db, storage, isConfigured as isFirebaseReady } from './services/firebase';
+import { auth, db, storage, googleProvider, isConfigured as isFirebaseReady } from './services/firebase';
 import { 
   signInWithEmailAndPassword, 
   createUserWithEmailAndPassword, 
   signOut, 
   onAuthStateChanged,
-  updateProfile
+  updateProfile,
+  signInWithPopup,
+  GoogleAuthProvider
 } from 'firebase/auth';
 import { 
   collection, 
@@ -118,6 +121,7 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<boolean>;
+  loginWithGoogle: () => Promise<boolean>;
   signup: (name: string, email: string, password: string) => Promise<boolean>;
   logout: () => void;
   deleteUser: (id: string) => void;
@@ -128,6 +132,34 @@ interface AuthContextType {
 }
 
 const AuthContext = createContext<AuthContextType>(null!);
+
+// Helper to Compress Image to Base64 (Max 1MB for Firestore)
+const compressAndConvertToBase64 = (file: File): Promise<string> => {
+   return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+         const img = new Image();
+         img.src = event.target?.result as string;
+         img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_WIDTH = 800; // Largeur max suffisante pour écran
+            const scaleSize = MAX_WIDTH / img.width;
+            canvas.width = MAX_WIDTH;
+            canvas.height = img.height * scaleSize;
+
+            const ctx = canvas.getContext('2d');
+            ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+            
+            // Compress to JPEG 70% quality
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.7);
+            resolve(dataUrl);
+         };
+         img.onerror = (error) => reject(error);
+      };
+      reader.onerror = (error) => reject(error);
+   });
+};
 
 // --- COMPONENTS ---
 
@@ -485,7 +517,7 @@ const LandingPage = () => {
 };
 
 const LoginPage = () => {
-  const { login, mockUsers, allUsers } = useContext(AuthContext);
+  const { login, loginWithGoogle, mockUsers, allUsers } = useContext(AuthContext);
   const navigate = useNavigate();
   const [error, setError] = useState('');
   const [email, setEmail] = useState('');
@@ -528,6 +560,23 @@ const LoginPage = () => {
     setLoading(false);
   };
 
+  const handleGoogleLogin = async () => {
+     setError('');
+     try {
+        const success = await loginWithGoogle();
+        if (success) navigate('/dashboard');
+     } catch (e) {
+        const msg = (e as any).message || '';
+        const code = (e as any).code || '';
+        
+        if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+           setError(`🚨 DOMAINE NON AUTORISÉ 🚨\n\nCopiez l'URL ci-dessous et ajoutez-la dans Firebase Console > Authentication > Settings > Authorized Domains :`);
+        } else {
+           setError("Erreur connexion Google : " + msg);
+        }
+     }
+  };
+
   return (
     <div className="min-h-screen flex bg-white">
        {/* Left Column: Visuals */}
@@ -548,7 +597,7 @@ const LoginPage = () => {
        </div>
 
        {/* Right Column: Login Form */}
-       <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-slate-50">
+       <div className="w-full lg:w-1/2 flex items-center justify-center p-8 bg-slate-50 overflow-y-auto">
           <div className="w-full max-w-md space-y-8">
              <div className="text-center lg:text-left">
                 <Link to="/" className="inline-block lg:hidden mb-8 text-blue-600 font-bold text-xl">FrameFlow</Link>
@@ -558,54 +607,103 @@ const LoginPage = () => {
              </div>
 
              {error && (
-               <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md flex items-start gap-3">
-                 <AlertTriangle className="text-red-500 mt-0.5" size={18} />
-                 <p className="text-sm text-red-700">{error}</p>
+               <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-md flex flex-col gap-2 animate-fade-in">
+                 <div className="flex items-start gap-3">
+                   <AlertTriangle className="text-red-500 mt-0.5 shrink-0" size={18} />
+                   <p className="text-sm text-red-700 whitespace-pre-wrap">{error}</p>
+                 </div>
+                 {error.includes('DOMAINE NON AUTORISÉ') && (
+                    <div className="mt-2 p-2 bg-white rounded border border-red-200 text-xs font-mono text-slate-600 break-all select-all">
+                       {window.location.hostname}
+                    </div>
+                 )}
                </div>
              )}
 
-             <form onSubmit={handleSubmit} className="space-y-6">
-                <div>
-                   <label className="block text-sm font-medium text-slate-700 mb-1">Adresse email</label>
-                   <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                         <Mail size={18} className="text-slate-400"/>
-                      </div>
-                      <input 
-                        type="email" 
-                        required 
-                        value={email}
-                        onChange={(e) => setEmail(e.target.value)}
-                        className="block w-full pl-10 pr-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
-                        placeholder="vous@exemple.com"
-                      />
-                   </div>
-                </div>
+             <div className="space-y-4">
+               {isFirebaseReady && (
+                  <button 
+                     type="button"
+                     onClick={handleGoogleLogin}
+                     className="w-full flex justify-center items-center gap-3 py-3 px-4 border border-slate-300 rounded-lg shadow-sm bg-white text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                     <svg className="w-5 h-5" viewBox="0 0 24 24">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                     </svg>
+                     Continuer avec Google
+                  </button>
+               )}
+               
+               {isFirebaseReady && (
+                  <div className="relative">
+                     <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-slate-300"></div>
+                     </div>
+                     <div className="relative flex justify-center text-sm">
+                        <span className="px-2 bg-slate-50 text-slate-500">Ou avec email</span>
+                     </div>
+                  </div>
+               )}
 
-                <div>
-                   <div className="flex justify-between items-center mb-1">
-                      <label className="block text-sm font-medium text-slate-700">Mot de passe</label>
-                      <a href="#" className="text-xs font-medium text-blue-600 hover:text-blue-500">Oublié ?</a>
-                   </div>
-                   <div className="relative">
-                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                         <Key size={18} className="text-slate-400"/>
-                      </div>
-                      <input 
-                        type="password" 
-                        required 
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="block w-full pl-10 pr-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
-                        placeholder="••••••••"
-                      />
-                   </div>
-                </div>
+               <form onSubmit={handleSubmit} className="space-y-6">
+                  <div>
+                     <label className="block text-sm font-medium text-slate-700 mb-1">Adresse email</label>
+                     <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                           <Mail size={18} className="text-slate-400"/>
+                        </div>
+                        <input 
+                           type="email" 
+                           required 
+                           value={email}
+                           onChange={(e) => setEmail(e.target.value)}
+                           className="block w-full pl-10 pr-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
+                           placeholder="vous@exemple.com"
+                        />
+                     </div>
+                  </div>
 
-                <button type="submit" disabled={loading} className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-70">
-                   {loading ? <Loader2 className="animate-spin" /> : 'Se connecter'}
-                </button>
-             </form>
+                  <div>
+                     <div className="flex justify-between items-center mb-1">
+                        <label className="block text-sm font-medium text-slate-700">Mot de passe</label>
+                        <a href="#" className="text-xs font-medium text-blue-600 hover:text-blue-500">Oublié ?</a>
+                     </div>
+                     <div className="relative">
+                        <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                           <Key size={18} className="text-slate-400"/>
+                        </div>
+                        <input 
+                           type="password" 
+                           required 
+                           value={password}
+                           onChange={(e) => setPassword(e.target.value)}
+                           className="block w-full pl-10 pr-3 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-colors"
+                           placeholder="••••••••"
+                        />
+                     </div>
+                  </div>
+
+                  <button type="submit" disabled={loading} className="w-full flex justify-center py-3 px-4 border border-transparent rounded-lg shadow-sm text-sm font-bold text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors disabled:opacity-70">
+                     {loading ? <Loader2 className="animate-spin" /> : 'Se connecter'}
+                  </button>
+               </form>
+             </div>
+
+             {/* Helper for Firebase Configuration */}
+             <div className="mt-8 pt-6 border-t border-slate-200">
+               <div className="flex items-start gap-2 text-xs text-slate-500 bg-slate-50 p-3 rounded-lg">
+                  <Info size={14} className="mt-0.5 shrink-0 text-blue-500" />
+                  <div>
+                     <strong>Info Développeur :</strong> Pour configurer Google Auth, ajoutez ce domaine dans la Console Firebase :<br/>
+                     <span className="font-mono bg-white px-1 border border-slate-200 rounded mt-1 inline-block select-all cursor-text text-slate-700 font-bold">
+                        {window.location.hostname}
+                     </span>
+                  </div>
+               </div>
+             </div>
 
              {!isFirebaseReady && (
                <>
@@ -659,7 +757,7 @@ const LoginPage = () => {
 };
 
 const SignupPage = () => {
-   const { signup } = useContext(AuthContext);
+   const { signup, loginWithGoogle } = useContext(AuthContext);
    const navigate = useNavigate();
    const [name, setName] = useState('');
    const [email, setEmail] = useState('');
@@ -682,12 +780,64 @@ const SignupPage = () => {
       }
    };
 
+   const handleGoogleSignup = async () => {
+      setError('');
+      try {
+         const success = await loginWithGoogle();
+         if (success) navigate('/dashboard');
+      } catch (e) {
+         const msg = (e as any).message || '';
+         const code = (e as any).code || '';
+         
+         if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+            setError(`🚨 DOMAINE NON AUTORISÉ 🚨\n\nCopiez l'URL ci-dessous et ajoutez-la dans Firebase Console > Authentication > Settings > Authorized Domains :`);
+         } else {
+            setError("Erreur inscription Google : " + msg);
+         }
+      }
+   };
+
    return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
          <div className="bg-white p-8 rounded-xl shadow-md max-w-md w-full">
             <h2 className="text-2xl font-bold mb-6 text-center">Créer un compte Créateur</h2>
-            {error && <div className="mb-4 text-red-500 text-sm bg-red-50 p-2 rounded">{error}</div>}
+            {error && (
+               <div className="mb-4 text-red-700 text-sm bg-red-50 p-3 rounded border border-red-200 whitespace-pre-wrap flex flex-col gap-2">
+                  <span>{error}</span>
+                  {error.includes('DOMAINE NON AUTORISÉ') && (
+                     <div className="p-2 bg-white rounded border border-red-200 text-xs font-mono text-slate-600 break-all select-all">
+                        {window.location.hostname}
+                     </div>
+                  )}
+               </div>
+            )}
             
+            {isFirebaseReady && (
+               <div className="mb-6">
+                  <button 
+                     type="button"
+                     onClick={handleGoogleSignup}
+                     className="w-full flex justify-center items-center gap-3 py-3 px-4 border border-slate-300 rounded-lg shadow-sm bg-white text-sm font-bold text-slate-700 hover:bg-slate-50 transition-colors"
+                  >
+                     <svg className="w-5 h-5" viewBox="0 0 24 24">
+                        <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/>
+                        <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                        <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                        <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                     </svg>
+                     S'inscrire avec Google
+                  </button>
+                  <div className="relative mt-6">
+                     <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-slate-300"></div>
+                     </div>
+                     <div className="relative flex justify-center text-sm">
+                        <span className="px-2 bg-white text-slate-500">Ou avec email</span>
+                     </div>
+                  </div>
+               </div>
+            )}
+
             <form onSubmit={handleSignup} className="space-y-4">
               <div>
                  <label className="block text-sm font-medium text-slate-700">Nom complet (ou Organisation)</label>
@@ -1021,14 +1171,9 @@ const CreateCampaign = ({ onAdd }: { onAdd: (c: Campaign) => void }) => {
     try {
       let frameUrl = 'https://placehold.co/1080x1080/png'; // Default
 
-      // 1. Upload Image to Firebase Storage if connected
-      if (frameFile && isFirebaseReady && storage) {
-        const storageRef = ref(storage, `campaigns/${Date.now()}_${frameFile.name}`);
-        const snapshot = await uploadBytes(storageRef, frameFile);
-        frameUrl = await getDownloadURL(snapshot.ref);
-      } else if (frameFile) {
-        // Fallback for Local Mode
-        frameUrl = URL.createObjectURL(frameFile);
+      // 1. Convert Image to Base64 (Local Compression for Firestore)
+      if (frameFile) {
+        frameUrl = await compressAndConvertToBase64(frameFile);
       }
 
       const newCampaign: Campaign = {
@@ -1306,7 +1451,7 @@ const ParticipantView = ({ campaigns, users }: { campaigns: Campaign[], users: U
                   <p className="text-slate-600 text-sm leading-relaxed mb-6">{campaign.description}</p>
                   
                   <div className="flex items-center gap-4 text-sm text-slate-500 pt-4 border-t border-slate-100">
-                     <span className="flex items-center gap-1"><Users size={14}/> {campaign.stats.downloads} utilisations</span>
+                     <span className="flex items-center gap-1"><Users size={14}/> {campaign.stats.downloads}</span>
                      <span className="flex items-center gap-1"><Tag size={14}/> {campaign.category}</span>
                   </div>
                </div>
@@ -1345,7 +1490,7 @@ const App = () => {
            if (userSnap.exists()) {
               setUser(userSnap.data() as User);
            } else {
-              // Fallback if profile doesn't exist yet (should be created on signup)
+              // Fallback if profile doesn't exist yet (should be created on signup or google login)
               setUser({
                 id: firebaseUser.uid,
                 name: firebaseUser.displayName || 'User',
@@ -1411,6 +1556,37 @@ const App = () => {
        }
        return false;
      }
+  };
+
+  const loginWithGoogle = async (): Promise<boolean> => {
+     if (isFirebaseReady && auth && googleProvider) {
+        try {
+           const result = await signInWithPopup(auth, googleProvider);
+           const user = result.user;
+           
+           // Check if user exists in Firestore, if not create them
+           const userRef = doc(db, "users", user.uid);
+           const userSnap = await getDoc(userRef);
+           
+           if (!userSnap.exists()) {
+              const newUser: User = {
+                 id: user.uid,
+                 name: user.displayName || 'Utilisateur',
+                 email: user.email || '',
+                 role: UserRole.CREATOR,
+                 subscription: SubscriptionTier.FREE,
+                 avatar: user.photoURL || `https://ui-avatars.com/api/?name=${user.displayName}`,
+                 isBanned: false
+              };
+              await setDoc(userRef, newUser);
+           }
+           return true;
+        } catch (e) {
+           console.error("Google Auth Error", e);
+           throw e;
+        }
+     }
+     return false;
   };
 
   const signup = async (name: string, email: string, pass: string): Promise<boolean> => {
@@ -1486,7 +1662,7 @@ const App = () => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, signup, logout, deleteUser, toggleBanUser, deleteCampaign, mockUsers: MOCK_USERS_INIT, allUsers: users }}>
+    <AuthContext.Provider value={{ user, loading, login, loginWithGoogle, signup, logout, deleteUser, toggleBanUser, deleteCampaign, mockUsers: MOCK_USERS_INIT, allUsers: users }}>
       <HashRouter>
         <Routes>
           <Route path="/" element={<LandingPage />} />
