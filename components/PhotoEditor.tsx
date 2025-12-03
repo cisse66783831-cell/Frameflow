@@ -1,15 +1,14 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Campaign, SubscriptionTier, CampaignType, TextFieldConfig } from '../types';
 import { Download, Share2, RefreshCw, ZoomIn, FileText, Loader2, Image as ImageIcon, Type, Palette, Settings2, ChevronDown, ChevronUp } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { GOOGLE_FONTS, loadFont } from '../utils/fonts';
 
 interface PhotoEditorProps {
   campaign: Campaign;
   onDownloadComplete: () => void;
 }
-
-// Fonts available for selection
-const AVAILABLE_FONTS = ['Inter', 'Montserrat', 'Playfair Display', 'Roboto', 'Courier New'];
 
 const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete }) => {
   // Common State
@@ -34,6 +33,8 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
   // Animation State
   const [isLoadedAnimation, setIsLoadedAnimation] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  // Force redraw state for fonts
+  const [fontLoadCounter, setFontLoadCounter] = useState(0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,6 +53,8 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
           color: field.color,
           fontFamily: field.fontFamily
         };
+        // Load initial font
+        loadFont(field.fontFamily);
       });
       setTextValues(initialValues);
       setTextStyles(initialStyles);
@@ -61,6 +64,27 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
       }
     }
   }, [campaign]);
+
+  // Handle Dynamic Font Loading for Custom Styles
+  useEffect(() => {
+    if (campaign.type === CampaignType.DOCUMENT) {
+      const activeFonts = new Set<string>();
+      
+      // Collect fonts from styles
+      (Object.values(textStyles) as Partial<TextFieldConfig>[]).forEach(style => {
+        if (style.fontFamily) activeFonts.add(style.fontFamily);
+      });
+      
+      // Load them
+      activeFonts.forEach(font => {
+        loadFont(font);
+        // Important: Wait for font to be ready then redraw canvas
+        document.fonts.load(`16px "${font}"`).then(() => {
+          setFontLoadCounter(c => c + 1); // Trigger redraw
+        });
+      });
+    }
+  }, [textStyles, campaign.type]);
 
   // Load Frame/Background Image
   useEffect(() => {
@@ -167,7 +191,8 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
           const color = styles.color || field.color;
           
           ctx.save();
-          ctx.font = `${fontSize}px ${fontFamily}, sans-serif`;
+          // Ensure fallback to sans-serif if font fails loading
+          ctx.font = `${fontSize}px "${fontFamily}", sans-serif`;
           ctx.fillStyle = color;
           ctx.textAlign = field.align;
           ctx.textBaseline = 'middle';
@@ -213,7 +238,7 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
       ctx.restore();
     }
 
-  }, [frameObj, imgObj, scale, rotation, position, campaign, textValues, textStyles, activeFieldId]);
+  }, [frameObj, imgObj, scale, rotation, position, campaign, textValues, textStyles, activeFieldId, fontLoadCounter]);
 
   useEffect(() => {
     draw();
@@ -428,9 +453,10 @@ const PhotoEditor: React.FC<PhotoEditorProps> = ({ campaign, onDownloadComplete 
                                     value={fontFamily}
                                     onChange={(e) => handleStyleChange(field.id, 'fontFamily', e.target.value)}
                                     className="w-full text-xs p-2 border border-slate-200 rounded bg-white outline-none focus:border-blue-500"
+                                    style={{ fontFamily }}
                                  >
-                                    {AVAILABLE_FONTS.map(f => (
-                                       <option key={f} value={f}>{f}</option>
+                                    {GOOGLE_FONTS.map(f => (
+                                       <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
                                     ))}
                                  </select>
                               </div>

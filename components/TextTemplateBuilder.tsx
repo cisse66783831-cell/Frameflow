@@ -1,13 +1,13 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { TextFieldConfig } from '../types';
 import { Type, Move, Trash2, Plus, AlignLeft, AlignCenter, AlignRight } from 'lucide-react';
+import { GOOGLE_FONTS, loadFont } from '../utils/fonts';
 
 interface TextTemplateBuilderProps {
   frameUrl: string;
   onConfigChange: (config: TextFieldConfig[]) => void;
 }
-
-const FONTS = ['Inter', 'Montserrat', 'Playfair Display', 'Roboto', 'Courier New'];
 
 const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onConfigChange }) => {
   const [fields, setFields] = useState<TextFieldConfig[]>([]);
@@ -15,6 +15,13 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
+  // Load fonts for existing fields on mount
+  useEffect(() => {
+    fields.forEach(field => {
+      loadFont(field.fontFamily);
+    });
+  }, [fields]);
 
   // Add a new field
   const addField = () => {
@@ -33,10 +40,15 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
     setFields(newFields);
     setSelectedFieldId(newField.id);
     onConfigChange(newFields);
+    loadFont(newField.fontFamily);
   };
 
   // Update a specific field
   const updateField = (id: string, updates: Partial<TextFieldConfig>) => {
+    // If font is changing, load it immediately
+    if (updates.fontFamily) {
+      loadFont(updates.fontFamily);
+    }
     const newFields = fields.map(f => f.id === id ? { ...f, ...updates } : f);
     setFields(newFields);
     onConfigChange(newFields);
@@ -128,7 +140,7 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
                      left: `${field.x}%`,
                      top: `${field.y}%`,
                      transform: 'translate(-50%, -50%)',
-                     fontFamily: field.fontFamily,
+                     fontFamily: `"${field.fontFamily}", sans-serif`, // Apply font family
                      fontSize: `${Math.max(12, field.fontSize / 2)}px`, // Scaled down slightly for preview
                      color: field.color,
                      textAlign: field.align,
@@ -202,7 +214,9 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
                         onChange={(e) => updateField(selectedField.id, { fontFamily: e.target.value })}
                         className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm bg-white"
                      >
-                        {FONTS.map(f => <option key={f} value={f}>{f}</option>)}
+                        {GOOGLE_FONTS.map(f => (
+                           <option key={f} value={f} style={{ fontFamily: f }}>{f}</option>
+                        ))}
                      </select>
                   </div>
                   <div>
