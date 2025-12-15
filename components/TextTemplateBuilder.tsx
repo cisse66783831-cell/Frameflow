@@ -15,6 +15,7 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+  const [previewScale, setPreviewScale] = useState(1);
 
   // Load fonts for existing fields on mount
   useEffect(() => {
@@ -22,6 +23,27 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
       loadFont(field.fontFamily);
     });
   }, [fields]);
+
+  // Update preview scale on resize to ensure font size looks proportional
+  useEffect(() => {
+    const updateScale = () => {
+      if (containerRef.current) {
+        // We assume a "base" width of ~800px for the editor view logic
+        // If the container is smaller (e.g. mobile 350px), we scale down the font rendering visually
+        const currentWidth = containerRef.current.offsetWidth;
+        setPreviewScale(currentWidth / 800); 
+      }
+    };
+
+    window.addEventListener('resize', updateScale);
+    // Initial calc after image load (simulated with timeout or check)
+    const timer = setTimeout(updateScale, 100);
+    
+    return () => {
+      window.removeEventListener('resize', updateScale);
+      clearTimeout(timer);
+    };
+  }, [frameUrl]);
 
   // Add a new field
   const addField = () => {
@@ -62,16 +84,25 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
     onConfigChange(newFields);
   };
 
-  // Drag Handlers
-  const handleMouseDown = (e: React.MouseEvent, field: TextFieldConfig) => {
+  // --- DRAG LOGIC (MOUSE + TOUCH) ---
+
+  const handleDragStart = (e: React.MouseEvent | React.TouchEvent, field: TextFieldConfig) => {
     e.stopPropagation();
+    // Prevent default browser dragging for images
+    // e.preventDefault(); 
+    
     setSelectedFieldId(field.id);
     if (!containerRef.current) return;
 
     const containerRect = containerRef.current.getBoundingClientRect();
+    
+    // Normalize coordinates (Mouse vs Touch)
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
     // Calculate mouse position relative to container
-    const mouseX = e.clientX - containerRect.left;
-    const mouseY = e.clientY - containerRect.top;
+    const mouseX = clientX - containerRect.left;
+    const mouseY = clientY - containerRect.top;
 
     // Convert field % to px
     const fieldX = (field.x / 100) * containerRect.width;
@@ -84,12 +115,21 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
     });
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleDragMove = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isDragging || !selectedFieldId || !containerRef.current) return;
+    
+    // Prevent scrolling on mobile while dragging
+    if ('touches' in e) {
+       // e.preventDefault(); // Commented out to allow some scrolling if needed, but usually safer to block
+    }
 
     const containerRect = containerRef.current.getBoundingClientRect();
-    const mouseX = e.clientX - containerRect.left;
-    const mouseY = e.clientY - containerRect.top;
+    
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+    const mouseX = clientX - containerRect.left;
+    const mouseY = clientY - containerRect.top;
 
     // Calculate new position
     let newXPx = mouseX - dragOffset.x;
@@ -106,7 +146,7 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
     updateField(selectedFieldId, { x: newX, y: newY });
   };
 
-  const handleMouseUp = () => {
+  const handleDragEnd = () => {
     setIsDragging(false);
   };
 
@@ -116,45 +156,58 @@ const TextTemplateBuilder: React.FC<TextTemplateBuilderProps> = ({ frameUrl, onC
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       {/* LEFT: Preview & Editor Area */}
       <div className="lg:col-span-2 bg-slate-100 p-4 rounded-xl border border-slate-200 flex flex-col items-center justify-center min-h-[500px]">
-         <div 
-            className="relative bg-white shadow-lg select-none overflow-hidden"
-            ref={containerRef}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            style={{ maxWidth: '100%' }}
-         >
-            <img 
-               src={frameUrl} 
-               alt="Template Background" 
-               className="max-w-full max-h-[600px] w-auto h-auto block object-contain pointer-events-none"
-            />
-            
-            {/* Render Overlay Fields */}
-            {fields.map(field => (
-               <div
-                  key={field.id}
-                  onMouseDown={(e) => handleMouseDown(e, field)}
-                  className={`absolute cursor-move px-2 py-1 border-2 transition-colors ${selectedFieldId === field.id ? 'border-blue-500 bg-blue-50/30' : 'border-transparent hover:border-blue-300'}`}
-                  style={{
-                     left: `${field.x}%`,
-                     top: `${field.y}%`,
-                     transform: 'translate(-50%, -50%)',
-                     fontFamily: `"${field.fontFamily}", sans-serif`, // Apply font family
-                     fontSize: `${Math.max(12, field.fontSize / 2)}px`, // Scaled down slightly for preview
-                     color: field.color,
-                     textAlign: field.align,
-                     whiteSpace: 'nowrap'
+         {/* Container Wrapper for Centering */}
+         <div className="w-full flex justify-center overflow-hidden">
+            <div 
+               className="relative bg-white shadow-lg select-none inline-block max-w-full"
+               ref={containerRef}
+               onMouseMove={handleDragMove}
+               onMouseUp={handleDragEnd}
+               onMouseLeave={handleDragEnd}
+               onTouchMove={handleDragMove}
+               onTouchEnd={handleDragEnd}
+               // Line-height 0 prevents ghost space below image
+               style={{ lineHeight: 0 }} 
+            >
+               <img 
+                  src={frameUrl} 
+                  alt="Template Background" 
+                  className="max-w-full max-h-[70vh] w-auto h-auto object-contain pointer-events-none"
+                  onLoad={() => {
+                     // Force update scale once image loads
+                     if (containerRef.current) setPreviewScale(containerRef.current.offsetWidth / 800);
                   }}
-               >
-                  {field.defaultValue}
-                  {selectedFieldId === field.id && (
-                     <div className="absolute -top-3 -right-3 w-6 h-6 bg-blue-500 rounded-full text-white flex items-center justify-center shadow-sm">
-                        <Move size={12} />
-                     </div>
-                  )}
-               </div>
-            ))}
+               />
+               
+               {/* Render Overlay Fields */}
+               {fields.map(field => (
+                  <div
+                     key={field.id}
+                     onMouseDown={(e) => handleDragStart(e, field)}
+                     onTouchStart={(e) => handleDragStart(e, field)}
+                     className={`absolute cursor-move px-2 py-1 border-2 transition-colors ${selectedFieldId === field.id ? 'border-blue-500 bg-blue-50/30' : 'border-transparent hover:border-blue-300'}`}
+                     style={{
+                        left: `${field.x}%`,
+                        top: `${field.y}%`,
+                        transform: 'translate(-50%, -50%)',
+                        fontFamily: `"${field.fontFamily}", sans-serif`,
+                        // Scale font visually based on container width to keep proportions
+                        fontSize: `${Math.max(10, field.fontSize * previewScale)}px`, 
+                        color: field.color,
+                        textAlign: field.align,
+                        whiteSpace: 'nowrap',
+                        lineHeight: '1.2'
+                     }}
+                  >
+                     {field.defaultValue}
+                     {selectedFieldId === field.id && (
+                        <div className="absolute -top-3 -right-3 w-6 h-6 bg-blue-500 rounded-full text-white flex items-center justify-center shadow-sm">
+                           <Move size={12} />
+                        </div>
+                     )}
+                  </div>
+               ))}
+            </div>
          </div>
          <p className="text-slate-400 text-sm mt-4 flex items-center gap-2">
             <Move size={14} /> Glissez les textes pour les positionner
